@@ -1,0 +1,108 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: S3 Uploader with Lambda and Static Website
+
+Parameters:
+  Name:
+    Type: String
+    Description: "SAM stack name, used to generate bucket and function names"
+
+Resources:
+
+  ## S3 Bucket
+  S3UploadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Name}"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods:
+              - "GET"
+              - "PUT"
+              - "POST"      # Allow POST for file uploads
+              - "DELETE"    # Allow DELETE if needed
+            AllowedOrigins:
+              - "*"          # You can restrict this to specific origins like ["https://yourfrontend.com"]
+            MaxAge: 3000    # Cache the CORS preflight response for 3000 seconds
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  ## S3 Bucket Policy (Allows public read access)
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3UploadBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${S3UploadBucket}/*"
+
+  ## Lambda function for handling multipart uploads
+  UploadRequestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Name}"
+      CodeUri: backend/
+      Handler: app.handler
+      Runtime: nodejs22.x
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          UploadBucket: !Ref S3UploadBucket
+      Role: !GetAtt UploadLambdaExecutionRole.Arn
+      FunctionUrlConfig:
+        AuthType: NONE
+
+  ## IAM Role for the Lambda function
+  UploadLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Name}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: !Sub "${Name}-s3-upload-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:putObjectAcl
+                  - s3:ListMultipartUploadParts
+                  - s3:CompleteMultipartUpload
+                Resource: !Sub "arn:aws:s3:::${S3UploadBucket}/*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+Outputs:
+  S3BucketName:
+    Description: "S3 bucket name for uploads"
+    Value: !Ref S3UploadBucket
+
+  S3WebsiteURL:
+    Description: "S3 Static Website URL"
+    Value: !Sub "http://${S3UploadBucket}.s3-website-${AWS::Region}.amazonaws.com"
+
+#  FunctionUrl:
+#    Description: "Lambda Function URL Endpoint"
+#    Value:
+#      Fn::GetAtt: UploadRequestFunction.FunctionUrl

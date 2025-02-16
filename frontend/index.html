@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload File to S3</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="shortcut icon" href="#">
+    <script src="https://unpkg.com/vue@2.6.14/dist/vue.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <h1>S3 File Uploader</h1>
+        <div v-if="!file">
+            <h2>Select a File</h2>
+            <input type="file" @change="onFileChange">
+        </div>
+        <div v-else>
+            <p>Selected File: {{ file.name }}</p>
+            <div>
+                <button v-if="!uploadURL" @click="removeFile">Reset</button>
+                <button v-if="!uploadURL" @click="uploadFile">Upload File</button>
+            </div>
+        </div>
+        <h2 v-if="uploadURL">Success! File uploaded.</h2>
+        <p v-if="uploadURL"><a :href="uploadURL" target="_blank">View Uploaded File</a></p>
+    </div>
+
+    <script>
+        const API_URL = 'https://<random>.lambda-url.<region>.on.aws' // Update with your Lambda function URL
+
+        new Vue({
+            el: "#app",
+            data: {
+                file: null,
+                uploadURL: ''
+            },
+            methods: {
+                onFileChange(e) {
+                    const files = e.target.files;
+                    if (!files.length) return;
+                    this.file = files[0];
+                },
+                removeFile() {
+                    this.file = null;
+                    this.uploadURL = '';
+                },
+                async uploadFile() {
+                    if (!this.file) return alert("No file selected.");
+
+                    try {
+                        console.log("🔹 Requesting presigned URL...");
+                        const initRes = await axios.post(`${API_URL}/upload`, {
+                            filename: this.file.name,
+                            contentType: this.file.type
+                        });
+
+                        if (!initRes.data.uploadUrl) {
+                            throw new Error("Invalid response from Lambda");
+                        }
+
+                        const { uploadUrl, fileUrl } = initRes.data;
+                        console.log("✅ Presigned URL received:", uploadUrl);
+
+                        console.log("🔹 Uploading file directly to S3...");
+                        const uploadRes = await fetch(uploadUrl, {
+                            method: 'PUT',
+                            body: this.file,
+                            headers: {
+                                'Content-Type': this.file.type
+                            }
+                        });
+
+                        if (!uploadRes.ok) {
+                            throw new Error(`S3 upload failed: ${uploadRes.statusText}`);
+                        }
+
+                        console.log("✅ File uploaded successfully!");
+                        this.uploadURL = fileUrl;
+                    } catch (error) {
+                        console.error("❌ Upload failed:", error);
+                        alert(`Upload failed: ${error.message}`);
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
