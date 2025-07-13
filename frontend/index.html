@@ -42,188 +42,123 @@
 
     <script>
         const API_URL = 'https://<random>.lambda-url.<region>.on.aws' // Update with your Lambda function URL
-        const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunk size (minimum for S3 multipart upload)
+        const UPLOAD_CONCURRENCY_LIMIT = 3; // Maximum simultaneous chunk uploads for mobile/cellular optimization
 
-        new Vue({
-            el: "#app",
-            data: {
-                file: null,
-                uploadURL: '',
-                isUploading: false,
-                uploadProgress: 0,
-                uploadId: '',
-                currentPart: 0,
-                totalParts: 0,
-                uploadedParts: [],
-                totalBytesUploaded: 0,
-                t: translations // Import from language file
-            },
-            methods: {
-                // Trigger the hidden file input
-                triggerFileInput() {
-                    document.getElementById('file-input').click();
-                },
-                formatBytes(bytes, decimals = 2) {
-                    if (bytes === 0) return '0 Bytes';
-                    const k = 1024;
-                    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-                    const i = Math.floor(Math.log(bytes) / Math.log(k));
-                    return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
-                },
-                onFileChange(e) {
-                    const files = e.target.files;
-                    if (!files.length) return;
-                    this.file = files[0];
-                },
-                removeFile() {
-                    this.file = null;
-                    this.uploadURL = '';
-                    this.uploadProgress = 0;
-                    this.currentPart = 0;
-                    this.totalParts = 0;
-                    this.uploadedParts = [];
-                    this.totalBytesUploaded = 0;
-                },
-                async uploadFile() {
-                    if (!this.file) return alert(this.t.noFileSelected);
+        // Check if external dependencies are available
+        if (typeof Vue === 'undefined' || typeof axios === 'undefined') {
+            document.getElementById('app').innerHTML = `
+                <h1>Loading Dependencies...</h1>
+                <p>External libraries (Vue.js, Axios) are not available. Please check your internet connection or serve from a proper web server.</p>
+                <p>This demo requires Vue.js and Axios to function properly.</p>
+            `;
+        } else {
+            // Flag to track if upload module is loaded
+            let uploadModuleLoaded = false;
 
-                    try {
-                        this.isUploading = true;
+            // Function to lazy load upload module
+            async function loadUploadModule() {
+                if (uploadModuleLoaded) return;
+                
+                return new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = './upload.js';
+                    script.onload = () => {
+                        uploadModuleLoaded = true;
+                        console.log("Upload module loaded successfully");
+                        resolve();
+                    };
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+            }
+
+            new Vue({
+                el: "#app",
+                data: {
+                    file: null,
+                    uploadURL: '',
+                    isUploading: false,
+                    uploadProgress: 0,
+                    currentPart: 0,
+                    totalParts: 0,
+                    uploadManager: null, // Will be lazy-loaded
+                    t: translations // Import from language file
+                },
+                methods: {
+                    // Trigger the hidden file input
+                    triggerFileInput() {
+                        document.getElementById('file-input').click();
+                    },
+                    formatBytes(bytes, decimals = 2) {
+                        if (bytes === 0) return '0 Bytes';
+                        const k = 1024;
+                        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                        const i = Math.floor(Math.log(bytes) / Math.log(k));
+                        return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
+                    },
+                    onFileChange(e) {
+                        const files = e.target.files;
+                        if (!files.length) return;
+                        this.file = files[0];
+                    },
+                    removeFile() {
+                        this.file = null;
+                        this.uploadURL = '';
                         this.uploadProgress = 0;
-                        this.totalBytesUploaded = 0;
+                        this.currentPart = 0;
+                        this.totalParts = 0;
+                    },
+                    async uploadFile() {
+                        if (!this.file) return alert(this.t.noFileSelected);
 
-                        // Calculate total parts
-                        this.totalParts = Math.ceil(this.file.size / CHUNK_SIZE);
-                        console.log(`Total file: ${this.file.size} bytes, Split into ${this.totalParts} parts`);
+                        try {
+                            this.isUploading = true;
+                            this.uploadProgress = 0;
 
-                        // Initiate multipart upload
-                        console.log("Initiating multipart upload...");
-                        const initRes = await axios.post(`${API_URL}/initiate`, {
-                            filename: this.file.name,
-                            contentType: this.file.type
-                        });
-
-                        if (!initRes.data.uploadId) {
-                            throw new Error("Invalid response from server: missing uploadId");
-                        }
-
-                        this.uploadId = initRes.data.uploadId;
-                        const key = initRes.data.key;
-
-                        console.log(`Multipart upload initiated: ${this.uploadId}`);
-
-                        // Upload each part
-                        this.uploadedParts = [];
-                        const uploadPromises = [];
-
-                        for (let partNumber = 1; partNumber <= this.totalParts; partNumber++) {
-                            const start = (partNumber - 1) * CHUNK_SIZE;
-                            const end = Math.min(partNumber * CHUNK_SIZE, this.file.size);
-                            const chunk = this.file.slice(start, end);
-
-                            uploadPromises.push(this.uploadPart(chunk, partNumber, key));
-                        }
-
-                        // Wait for all parts to upload
-                        await Promise.all(uploadPromises);
-                        console.log("All parts uploaded successfully");
-
-                        // Complete the multipart upload
-                        console.log("Completing multipart upload...");
-                        const completeRes = await axios.post(`${API_URL}/complete`, {
-                            uploadId: this.uploadId,
-                            key: key,
-                            parts: this.uploadedParts.sort((a, b) => a.PartNumber - b.PartNumber)
-                        });
-
-                        console.log("Multipart upload completed!");
-                        this.uploadURL = completeRes.data.fileUrl;
-                        this.isUploading = false;
-
-                    } catch (error) {
-                        console.error("Upload failed:", error);
-                        alert(`${this.t.uploadFailed}: ${error.message}`);
-                        this.isUploading = false;
-
-                        // Try to abort the multipart upload if it was initiated
-                        if (this.uploadId) {
-                            try {
-                                await axios.post(`${API_URL}/abort`, {
-                                    uploadId: this.uploadId,
-                                    key: key
-                                });
-                                console.log("Multipart upload aborted");
-                            } catch (abortError) {
-                                console.error("Error aborting upload:", abortError);
+                            // Lazy load upload module only when needed
+                            if (!this.uploadManager) {
+                                console.log("Loading upload module...");
+                                await loadUploadModule();
+                                
+                                // Check if upload module loaded successfully
+                                if (typeof window.S3Upload === 'undefined') {
+                                    throw new Error('Upload module failed to load');
+                                }
+                                
+                                this.uploadManager = window.S3Upload.initializeUpload(API_URL, UPLOAD_CONCURRENCY_LIMIT);
+                                console.log("Upload manager initialized with concurrency limit:", UPLOAD_CONCURRENCY_LIMIT);
                             }
+
+                            // Calculate total parts for progress display
+                            const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+                            this.totalParts = Math.ceil(this.file.size / CHUNK_SIZE);
+
+                            // Upload file with progress callbacks
+                            const uploadURL = await this.uploadManager.uploadFile(this.file, {
+                                onProgress: (progress) => {
+                                    this.uploadProgress = progress;
+                                },
+                                onPartProgress: (partNumber) => {
+                                    this.currentPart = partNumber;
+                                },
+                                onError: (error) => {
+                                    console.error("Upload error:", error);
+                                    alert(`${this.t.uploadFailed}: ${error.message}`);
+                                }
+                            });
+
+                            this.uploadURL = uploadURL;
+                            this.isUploading = false;
+
+                        } catch (error) {
+                            console.error("Upload failed:", error);
+                            alert(`${this.t.uploadFailed}: ${error.message}`);
+                            this.isUploading = false;
                         }
-                    }
-                },
-                async uploadPart(chunk, partNumber, key) {
-                    try {
-                        this.currentPart = partNumber;
-
-                        // Get presigned URL for this part
-                        const presignRes = await axios.post(`${API_URL}/presign-part`, {
-                            uploadId: this.uploadId,
-                            key: key,
-                            partNumber: partNumber
-                        });
-
-                        const presignedUrl = presignRes.data.presignedUrl;
-
-                        // Upload the chunk directly to S3 using the presigned URL
-                        return new Promise((resolve, reject) => {
-                            const xhr = new XMLHttpRequest();
-
-                            xhr.upload.addEventListener('progress', (event) => {
-                                if (event.lengthComputable) {
-                                    // Calculate part contribution to overall progress
-                                    const partProgress = event.loaded / event.total;
-                                    const partWeight = chunk.size / this.file.size;
-
-                                    // Track bytes uploaded for this part
-                                    const bytesUploaded = Math.min(event.loaded, event.total);
-                                    this.totalBytesUploaded = Math.min(
-                                        this.file.size,
-                                        this.totalBytesUploaded + (bytesUploaded - (this.lastPartBytesUploaded || 0))
-                                    );
-                                    this.lastPartBytesUploaded = bytesUploaded;
-
-                                    this.uploadProgress = Math.round((this.totalBytesUploaded / this.file.size) * 100);
-                                }
-                            });
-
-                            xhr.addEventListener('load', () => {
-                                if (xhr.status >= 200 && xhr.status < 300) {
-                                    const etag = xhr.getResponseHeader('ETag');
-                                    this.uploadedParts.push({
-                                        PartNumber: partNumber,
-                                        ETag: etag
-                                    });
-                                    this.lastPartBytesUploaded = 0;
-                                    this.totalBytesUploaded += chunk.size;
-                                    this.uploadProgress = Math.round((this.totalBytesUploaded / this.file.size) * 100);
-                                    resolve();
-                                } else {
-                                    reject(new Error(`Upload failed for part ${partNumber}: ${xhr.statusText}`));
-                                }
-                            });
-
-                            xhr.addEventListener('error', () => {
-                                reject(new Error(`Network error uploading part ${partNumber}`));
-                            });
-
-                            xhr.open('PUT', presignedUrl);
-                            xhr.send(chunk);
-                        });
-                    } catch (error) {
-                        console.error(`Error uploading part ${partNumber}:`, error);
-                        throw error;
                     }
                 }
-            }
-        });
+            });
+        }
     </script>
 </body>
 </html>
