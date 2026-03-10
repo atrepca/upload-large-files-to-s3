@@ -86,8 +86,8 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:PutObject
-                  - s3:putObjectAcl
                   - s3:ListMultipartUploadParts
+                  - s3:AbortMultipartUpload
                   - s3:CompleteMultipartUpload
                 Resource: !Sub "arn:aws:s3:::${S3UploadBucket}/*"
       ManagedPolicyArns:
@@ -102,7 +102,7 @@ Outputs:
     Description: "S3 Static Website URL"
     Value: !Sub "http://${S3UploadBucket}.s3-website-${AWS::Region}.amazonaws.com"
 
-#  FunctionUrl:
-#    Description: "Lambda Function URL Endpoint"
-#    Value:
-#      Fn::GetAtt: UploadRequestFunction.FunctionUrl
+  FunctionUrl:
+    Description: "Lambda Function URL Endpoint — use this as API_URL in frontend/index.html"
+    Value:
+      Fn::GetAtt: UploadRequestFunctionUrl.FunctionUrl

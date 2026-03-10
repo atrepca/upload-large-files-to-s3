@@ -1,71 +1,85 @@
----
+# S3 Large File Uploader
 
-# 🚀 S3 File Uploader – AWS Lambda & Vue.js
-A simple **serverless** app to upload files directly to **Amazon S3** using **presigned URLs**.
+Serverless app for uploading large files directly to S3 from a browser using multipart upload and presigned URLs. Raw file data never passes through Lambda.
 
-## 🛠️ Features
-✅ **Presigned URLs** for secure uploads  
-✅ **Vue.js frontend** for easy interaction  
-✅ **S3 static site** hosted in the same bucket  
-✅ **AWS SAM** deployment
+## How it works
 
----
-
-## 📂 Project Structure
 ```
-/s3-file-uploader
-├── backend/app.js         # 🚀 Lambda function (Node.js 22.x) for generating presigned URLs
-├── frontend/index.html     # 🎨 Frontend (Vue.js) for selecting & uploading files
-├── template.yaml  # ⚙️ AWS SAM template defining the infrastructure
+Browser → POST /initiate      → Lambda → S3 CreateMultipartUpload
+Browser → POST /presign-part  → Lambda → returns presigned PUT URL per part
+Browser → PUT <presigned URL> → S3 directly
+Browser → POST /complete      → Lambda → S3 CompleteMultipartUpload
+Browser → POST /abort         → Lambda → S3 AbortMultipartUpload (on failure)
 ```
 
----
+Files are split into 5 MB parts and uploaded in parallel. Progress is tracked per-byte across all concurrent part uploads.
 
-## ⚙️ AWS SAM Template (template.yaml)  
+## Stack
 
-This **SAM template** defines the required **AWS resources**:
+| Resource | Type | Purpose |
+|---|---|---|
+| `S3UploadBucket` | `AWS::S3::Bucket` | Stores uploaded files; serves the static frontend |
+| `UploadRequestFunction` | `AWS::Serverless::Function` | Multipart upload orchestration (Node.js 22.x) |
+| `UploadRequestFunctionUrl` | `AWS::Lambda::Url` | Public HTTP endpoint, `AuthType: NONE` |
+| `UploadLambdaExecutionRole` | `AWS::IAM::Role` | Scoped to S3 multipart upload actions only |
 
-🔹 **S3 Bucket** (`S3UploadBucket`) – Stores uploaded files, and the static site  
-🔹 **Lambda Function** (`UploadRequestFunction`) – Generates presigned URLs  
-🔹 **IAM Role** (`UploadLambdaExecutionRole`) – Grants Lambda permission to write to S3  
-🔹 **CORS Configuration** – Allows cross-origin requests  
-🔹 **Public S3 Policy** – Enables public access
+## Project structure
 
----
+```
+├── backend/
+│   ├── app.js          # Lambda handler
+│   └── package.json
+├── frontend/
+│   ├── index.html      # Vue.js SPA — uses __LAMBDA_URL__ placeholder
+│   ├── style.css
+│   └── lang/
+│       ├── en.js
+│       └── ro.js
+├── Makefile            # deploy + sync targets
+├── samconfig.toml      # SAM deploy config (not committed)
+└── template.yaml       # SAM template
+```
 
-## 🚀 Deployment
+## Deployment
 
-### 1️⃣ Prerequisites 
-🔹 **AWS CLI** installed & configured  
-🔹 **AWS SAM** installed (`brew install aws-sam-cli` for macOS, or follow AWS docs)  
-🔹 **S3 Bucket** (automatically created by SAM)
+### Prerequisites
 
-### 2️⃣ Deploy the Stack 
+- AWS CLI configured
+- AWS SAM CLI — `pipx install aws-sam-cli` or see [install docs](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+
+### First-time setup
+
+Run `sam deploy --guided` to generate `samconfig.toml`, then commit nothing — `samconfig.toml` stays local.
+
+### Deploy infrastructure
+
 ```sh
-sam build
-sam deploy --profile AWS_PROFILE --guided
+make deploy
 ```
-👉 Replace `AWS_PROFILE` with your AWS profile name, and input params using `--guided`.
 
-### 3️⃣ Set Required Environment Variables 
-🔹 **AWS_REGION** (e.g., `eu-central-1`)  
-🔹 **UploadBucket** (created automatically by SAM)  
-🔹 Update **`API_URL`** in `frontend/index.html` with the Lambda function URL
+Runs `sam build` and `sam deploy`. Stack outputs the Lambda URL, website URL, and bucket name.
 
----
+### Deploy frontend
 
-## 🌍 Running the App
+```sh
+make sync
+```
 
-1️⃣ Open the static S3 site URL in a browser, e.g. `http://s3bucketname-website.aws-region-1.amazonaws.com/`   
-2️⃣ Select a vfile & click **Upload File**.   
-3️⃣ The file is uploaded to S3 & a link is provided. 
+Reads the Lambda URL from the CloudFormation stack outputs, injects it into `index.html` at upload time (the source file keeps the `__LAMBDA_URL__` placeholder and is never modified on disk), then syncs all frontend assets to S3.
 
----
+The Lambda URL is never committed to the repository.
 
-## 📌 Important Notes
-⚠️ **CORS is enabled** (allowing all origins) – adjust if needed.  
-⚠️ **The frontend uses a hardcoded API_URL** – update it with your Lambda function URL.
+## Security notes
 
----
+- **Lambda URL** has no authentication — consider AWS WAF to rate-limit or restrict access.
+- **CORS** is open (`AllowedOrigins: ["*"]`) — restrict to your domain in `template.yaml` for production.
+- **Uploaded files are publicly readable** — the bucket policy grants `s3:GetObject` to `*`, covering both the static site and uploaded objects. Use separate buckets or a scoped policy if that is not acceptable.
+- Files are stored under `uploads/<ISO-timestamp>-<filename>`.
 
-🎉 **Happy Uploading!** 🚀
+## Language
+
+The UI defaults to Romanian. To switch to English, update line 11 of `frontend/index.html`:
+
+```html
+<script src="lang/en.js"></script>
+```
